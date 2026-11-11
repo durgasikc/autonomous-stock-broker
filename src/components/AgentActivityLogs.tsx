@@ -11,6 +11,11 @@ interface AgentActivityLogsProps {
 
 export const AgentActivityLogs: React.FC<AgentActivityLogsProps> = ({ logs, onClearLogs }) => {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const [isMounted, setIsMounted] = React.useState(false);
+
+  useEffect(() => {
+    setIsMounted(true);
+  }, []);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -71,16 +76,20 @@ export const AgentActivityLogs: React.FC<AgentActivityLogsProps> = ({ logs, onCl
         className="flex-1 overflow-y-auto max-h-[220px] p-2.5 space-y-2 font-mono text-xs bg-[#080b12]"
       >
         {logs.map((log) => {
-          const time = new Date(log.timestamp).toLocaleTimeString('en-US', {
-            hour12: false,
-            hour: '2-digit',
-            minute: '2-digit',
-            second: '2-digit',
-          });
+          const time = isMounted
+            ? new Date(log.timestamp).toLocaleTimeString('en-US', {
+                hour12: false,
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+              })
+            : '--:--:--';
 
           return (
             <div key={log.id} className="flex items-start gap-2 leading-relaxed">
-              <span className="text-slate-500 text-[10px] select-none pt-0.5">{time}</span>
+              <span suppressHydrationWarning className="text-slate-500 text-[10px] select-none pt-0.5">
+                {time}
+              </span>
               {getLogIcon(log.level)}
               <div className="flex-1">
                 <div className="flex items-center gap-2">

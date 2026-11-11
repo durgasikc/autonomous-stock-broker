@@ -64,22 +64,8 @@ export default function AutonomousBrokerApp() {
   const [currentSignal, setCurrentSignal] = useState<TradingSignal | null>(null);
 
   // Terminal Logs
-  const [logs, setLogs] = useState<AgentLog[]>([
-    {
-      id: 'init_1',
-      timestamp: Date.now() - 3000,
-      level: 'INFO',
-      title: 'Autonomous Broker Engine Initialized',
-      message: 'System online. Connected to Simulated Paper Broker. Hybrid AI quantitative engine active.',
-    },
-    {
-      id: 'init_2',
-      timestamp: Date.now() - 1500,
-      level: 'INFO',
-      title: 'Risk Guardrails Armed',
-      message: 'Circuit breaker: 3% max daily loss. Max allocation: 15% per ticker. Auto-bracket trailing stops active.',
-    },
-  ]);
+  const [logs, setLogs] = useState<AgentLog[]>([]);
+  const [isMounted, setIsMounted] = useState<boolean>(false);
 
   // Circuit Breaker state
   const [circuitBreakerTripped, setCircuitBreakerTripped] = useState<boolean>(false);
@@ -99,8 +85,26 @@ export default function AutonomousBrokerApp() {
     ]);
   }, []);
 
-  // Initialize market data for all watchlist tickers
+  // Initialize market data and logs on client mount
   useEffect(() => {
+    setIsMounted(true);
+    setLogs([
+      {
+        id: 'init_1',
+        timestamp: Date.now() - 3000,
+        level: 'INFO',
+        title: 'Autonomous Broker Engine Initialized',
+        message: 'System online. Connected to Simulated Paper Broker. Hybrid AI quantitative engine active.',
+      },
+      {
+        id: 'init_2',
+        timestamp: Date.now() - 1500,
+        level: 'INFO',
+        title: 'Risk Guardrails Armed',
+        message: 'Circuit breaker: 3% max daily loss. Max allocation: 15% per ticker. Auto-bracket trailing stops active.',
+      },
+    ]);
+
     const initialData: Record<string, Candlestick[]> = {};
     for (const sym of Object.keys(WATCHLIST)) {
       initialData[sym] = generateHistoricalCandles(sym, 80, 60);
@@ -118,8 +122,10 @@ export default function AutonomousBrokerApp() {
       .then((summary) => setPortfolio(summary));
   }, []);
 
-  // Autonomous Trading Engine Loop (Runs every 2.5 seconds)
+  // Autonomous Trading Engine Loop (Runs every 2.4 seconds)
   useEffect(() => {
+    if (!isMounted) return;
+
     const interval = setInterval(async () => {
       // 1. Advance market price for current symbol (and random secondary symbol)
       setMarketData((prev) => {
@@ -246,6 +252,7 @@ export default function AutonomousBrokerApp() {
 
     return () => clearInterval(interval);
   }, [
+    isMounted,
     selectedSymbol,
     marketData,
     autonomousEnabled,

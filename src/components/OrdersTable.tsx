@@ -9,6 +9,11 @@ interface OrdersTableProps {
 }
 
 export const OrdersTable: React.FC<OrdersTableProps> = ({ orders }) => {
+  const [isMounted, setIsMounted] = React.useState(false);
+
+  React.useEffect(() => {
+    setIsMounted(true);
+  }, []);
   return (
     <div className="bg-broker-card border border-broker-border rounded-lg overflow-hidden flex flex-col h-full select-none">
       <div className="bg-[#0f1420] border-b border-broker-border px-4 py-2.5 flex items-center justify-between">
@@ -40,16 +45,20 @@ export const OrdersTable: React.FC<OrdersTableProps> = ({ orders }) => {
             <tbody className="divide-y divide-broker-border/40">
               {orders.map((o) => {
                 const isBuy = o.side === 'BUY';
-                const timeStr = new Date(o.timestamp).toLocaleTimeString('en-US', {
-                  hour12: false,
-                  hour: '2-digit',
-                  minute: '2-digit',
-                  second: '2-digit',
-                });
+                const timeStr = isMounted
+                  ? new Date(o.timestamp).toLocaleTimeString('en-US', {
+                      hour12: false,
+                      hour: '2-digit',
+                      minute: '2-digit',
+                      second: '2-digit',
+                    })
+                  : '--:--:--';
 
                 return (
                   <tr key={o.id} className="hover:bg-[#111726] transition-colors">
-                    <td className="py-2 px-3 text-slate-400 text-[11px] whitespace-nowrap">{timeStr}</td>
+                    <td suppressHydrationWarning className="py-2 px-3 text-slate-400 text-[11px] whitespace-nowrap">
+                      {timeStr}
+                    </td>
                     <td className="py-2 px-3 font-bold text-white">{o.symbol}</td>
                     <td className="py-2 px-3">
                       <span
