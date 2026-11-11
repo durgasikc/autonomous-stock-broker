@@ -1,0 +1,567 @@
+'use client';
+
+import React, { useState, useRef, useEffect, useMemo } from 'react';
+import { Candlestick, Order, TechnicalIndicators } from '../types';
+import { WATCHLIST } from '../lib/marketData';
+import {
+  calculateSMA,
+  calculateEMA,
+  calculateBollingerBands,
+  computeAllIndicators,
+} from '../lib/indicators';
+import { Eye, EyeOff, TrendingUp, TrendingDown, Crosshair } from 'lucide-react';
+
+interface TradingChartProps {
+  symbol: string;
+  onSelectSymbol: (sym: string) => void;
+  candles: Candlestick[];
+  orders: Order[];
+  latestIndicators: TechnicalIndicators;
+}
+
+export const TradingChart: React.FC<TradingChartProps> = ({
+  symbol,
+  onSelectSymbol,
+  candles,
+  orders,
+  latestIndicators,
+}) => {
+  const [showBB, setShowBB] = useState(true);
+  const [showEMA, setShowEMA] = useState(true);
+  const [showSMA, setShowSMA] = useState(true);
+  const [timeframe, setTimeframe] = useState<'1m' | '5m' | '1h' | '1D'>('1h');
+  const [hoveredCandle, setHoveredCandle] = useState<Candlestick | null>(null);
+
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [dimensions, setDimensions] = useState({ width: 800, height: 420 });
+
+  useEffect(() => {
+    const handleResize = () => {
+      if (containerRef.current) {
+        setDimensions({
+          width: containerRef.current.clientWidth,
+          height: 420,
+        });
+      }
+    };
+    handleResize();
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  const currentCandle = candles[candles.length - 1];
+  const firstCandle = candles[0];
+  const priceChange = currentCandle && firstCandle ? currentCandle.close - firstCandle.open : 0;
+  const priceChangePct = firstCandle ? (priceChange / firstCandle.open) * 100 : 0;
+  const isUp = priceChange >= 0;
+
+  // Chart coordinate mapping
+  const chartData = useMemo(() => {
+    if (candles.length === 0) return null;
+
+    const closes = candles.map((c) => c.close);
+    const bb = calculateBollingerBands(closes, 20, 2);
+    const ema9 = calculateEMA(closes, 9);
+    const ema21 = calculateEMA(closes, 21);
+    const sma50 = calculateSMA(closes, 50);
+
+    let minPrice = Infinity;
+    let maxPrice = -Infinity;
+    let maxVol = 0;
+
+    for (let i = 0; i < candles.length; i++) {
+      const c = candles[i];
+      if (c.low < minPrice) minPrice = c.low;
+      if (c.high > maxPrice) maxPrice = c.high;
+      if (c.volume > maxVol) maxVol = c.volume;
+
+      if (showBB && bb.upper[i]) {
+        if (bb.upper[i] > maxPrice) maxPrice = bb.upper[i];
+        if (bb.lower[i] < minPrice) minPrice = bb.lower[i];
+      }
+    }
+
+    // Add padding to price range
+    const priceRange = maxPrice - minPrice || 1;
+    minPrice -= priceRange * 0.05;
+    maxPrice += priceRange * 0.05;
+
+    return {
+      minPrice,
+      maxPrice,
+      maxVol: maxVol || 1,
+      bb,
+      ema9,
+      ema21,
+      sma50,
+    };
+  }, [candles, showBB]);
+
+  const { width, height } = dimensions;
+  const paddingRight = 65;
+  const paddingBottom = 45;
+  const paddingTop = 20;
+  const plotWidth = Math.max(100, width - paddingRight);
+  const plotHeight = Math.max(100, height - paddingBottom - paddingTop);
+
+  const candleWidth = Math.max(2, (plotWidth / Math.max(1, candles.length)) * 0.7);
+  const candleGap = plotWidth / Math.max(1, candles.length);
+
+  const getY = (val: number) => {
+    if (!chartData) return 0;
+    const { minPrice, maxPrice } = chartData;
+    const ratio = (val - minPrice) / (maxPrice - minPrice || 1);
+    return paddingTop + (1 - ratio) * (plotHeight - 40); // 40px reserved for volume
+  };
+
+  const getVolY = (vol: number) => {
+    if (!chartData) return plotHeight + paddingTop;
+    const ratio = vol / chartData.maxVol;
+    const volHeight = ratio * 35;
+    return paddingTop + plotHeight - volHeight;
+  };
+
+  // Filter orders matching current symbol
+  const symbolOrders = orders.filter((o) => o.symbol === symbol && o.status === 'FILLED');
+
+  return (
+    <div className="bg-broker-card border border-broker-border rounded-lg overflow-hidden flex flex-col h-full select-none">
+      {/* Top Bar: Stock Selector & Ticker Details */}
+      <div className="border-b border-broker-border px-4 py-2.5 flex flex-wrap items-center justify-between gap-3 bg-[#0f1420]">
+        {/* Watchlist Quick Switcher */}
+        <div className="flex items-center gap-1.5 overflow-x-auto pb-1 sm:pb-0">
+          {Object.keys(WATCHLIST).map((ticker) => {
+            const isSelected = ticker === symbol;
+            return (
+              <button
+                key={ticker}
+                onClick={() => onSelectSymbol(ticker)}
+                className={`px-2.5 py-1 rounded text-xs font-mono font-medium transition-all ${
+                  isSelected
+                    ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 shadow-sm'
+                    : 'bg-[#151b29] hover:bg-[#1c2438] text-slate-400 border border-transparent'
+                }`}
+              >
+                {ticker}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Live Price and Return */}
+        <div className="flex items-center gap-3">
+          <div className="flex items-baseline gap-2">
+            <span className="text-xl font-bold font-mono text-white">
+              ${currentCandle ? currentCandle.close.toFixed(2) : '---'}
+            </span>
+            <span
+              className={`text-xs font-mono font-semibold flex items-center gap-0.5 ${
+                isUp ? 'text-emerald-400' : 'text-rose-400'
+              }`}
+            >
+              {isUp ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
+              {isUp ? '+' : ''}${priceChange.toFixed(2)} ({isUp ? '+' : ''}
+              {priceChangePct.toFixed(2)}%)
+            </span>
+          </div>
+
+          {/* Timeframe & Overlays */}
+          <div className="flex items-center gap-1 border-l border-broker-border pl-3">
+            {(['1m', '5m', '1h', '1D'] as const).map((tf) => (
+              <button
+                key={tf}
+                onClick={() => setTimeframe(tf)}
+                className={`px-2 py-0.5 text-[11px] rounded font-mono ${
+                  timeframe === tf ? 'bg-slate-700 text-white font-semibold' : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                {tf}
+              </button>
+            ))}
+          </div>
+
+          {/* Overlay Toggles */}
+          <div className="hidden lg:flex items-center gap-1 border-l border-broker-border pl-2 text-xs">
+            <button
+              onClick={() => setShowBB(!showBB)}
+              className={`px-2 py-0.5 rounded text-[11px] font-mono border ${
+                showBB ? 'bg-blue-950/60 text-blue-300 border-blue-800' : 'bg-transparent text-slate-500 border-slate-800'
+              }`}
+            >
+              BB(20,2)
+            </button>
+            <button
+              onClick={() => setShowEMA(!showEMA)}
+              className={`px-2 py-0.5 rounded text-[11px] font-mono border ${
+                showEMA ? 'bg-cyan-950/60 text-cyan-300 border-cyan-800' : 'bg-transparent text-slate-500 border-slate-800'
+              }`}
+            >
+              EMA(9/21)
+            </button>
+            <button
+              onClick={() => setShowSMA(!showSMA)}
+              className={`px-2 py-0.5 rounded text-[11px] font-mono border ${
+                showSMA ? 'bg-purple-950/60 text-purple-300 border-purple-800' : 'bg-transparent text-slate-500 border-slate-800'
+              }`}
+            >
+              SMA(50)
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Main Candlestick Chart Area */}
+      <div ref={containerRef} className="relative flex-1 min-h-[380px] bg-[#090d16] p-2">
+        {chartData && (
+          <svg
+            width={width}
+            height={height}
+            className="overflow-visible"
+            onMouseLeave={() => setHoveredCandle(null)}
+          >
+            <defs>
+              <linearGradient id="bbGradient" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="#3b82f6" stopOpacity="0.12" />
+                <stop offset="100%" stopColor="#3b82f6" stopOpacity="0.02" />
+              </linearGradient>
+            </defs>
+
+            {/* Horizontal Grid Lines & Price Labels */}
+            {[0.1, 0.3, 0.5, 0.7, 0.9].map((pct, idx) => {
+              const priceVal = chartData.minPrice + (chartData.maxPrice - chartData.minPrice) * (1 - pct);
+              const y = paddingTop + pct * (plotHeight - 40);
+              return (
+                <g key={idx}>
+                  <line
+                    x1={0}
+                    y1={y}
+                    x2={plotWidth}
+                    y2={y}
+                    stroke="#162032"
+                    strokeDasharray="3 3"
+                    strokeWidth={1}
+                  />
+                  <text
+                    x={plotWidth + 8}
+                    y={y + 3}
+                    fill="#64748b"
+                    fontSize="10"
+                    fontFamily="monospace"
+                  >
+                    ${priceVal.toFixed(2)}
+                  </text>
+                </g>
+              );
+            })}
+
+            {/* Bollinger Bands Shaded Area */}
+            {showBB && (
+              <polygon
+                points={
+                  candles
+                    .map((_, i) => `${i * candleGap + candleGap / 2},${getY(chartData.bb.upper[i])}`)
+                    .join(' ') +
+                  ' ' +
+                  candles
+                    .slice()
+                    .reverse()
+                    .map(
+                      (_, revIdx) => {
+                        const i = candles.length - 1 - revIdx;
+                        return `${i * candleGap + candleGap / 2},${getY(chartData.bb.lower[i])}`;
+                      }
+                    )
+                    .join(' ')
+                }
+                fill="url(#bbGradient)"
+                stroke="none"
+              />
+            )}
+
+            {/* Bollinger Bands Upper / Lower Lines */}
+            {showBB && (
+              <>
+                <polyline
+                  points={candles
+                    .map((_, i) => `${i * candleGap + candleGap / 2},${getY(chartData.bb.upper[i])}`)
+                    .join(' ')}
+                  fill="none"
+                  stroke="#3b82f6"
+                  strokeWidth="1"
+                  strokeOpacity="0.4"
+                  strokeDasharray="2 2"
+                />
+                <polyline
+                  points={candles
+                    .map((_, i) => `${i * candleGap + candleGap / 2},${getY(chartData.bb.lower[i])}`)
+                    .join(' ')}
+                  fill="none"
+                  stroke="#3b82f6"
+                  strokeWidth="1"
+                  strokeOpacity="0.4"
+                  strokeDasharray="2 2"
+                />
+              </>
+            )}
+
+            {/* SMA 50 Line */}
+            {showSMA && (
+              <polyline
+                points={candles
+                  .map((_, i) => `${i * candleGap + candleGap / 2},${getY(chartData.sma50[i])}`)
+                  .join(' ')}
+                fill="none"
+                stroke="#a855f7"
+                strokeWidth="1.5"
+                strokeOpacity="0.75"
+              />
+            )}
+
+            {/* EMA 21 Line */}
+            {showEMA && (
+              <polyline
+                points={candles
+                  .map((_, i) => `${i * candleGap + candleGap / 2},${getY(chartData.ema21[i])}`)
+                  .join(' ')}
+                fill="none"
+                stroke="#f59e0b"
+                strokeWidth="1.5"
+                strokeOpacity="0.8"
+              />
+            )}
+
+            {/* EMA 9 Line */}
+            {showEMA && (
+              <polyline
+                points={candles
+                  .map((_, i) => `${i * candleGap + candleGap / 2},${getY(chartData.ema9[i])}`)
+                  .join(' ')}
+                fill="none"
+                stroke="#06b6d4"
+                strokeWidth="1.5"
+                strokeOpacity="0.9"
+              />
+            )}
+
+            {/* Volume Bars */}
+            {candles.map((c, i) => {
+              const x = i * candleGap + (candleGap - candleWidth) / 2;
+              const y = getVolY(c.volume);
+              const barH = paddingTop + plotHeight - y;
+              const isBull = c.close >= c.open;
+              return (
+                <rect
+                  key={`vol_${i}`}
+                  x={x}
+                  y={y}
+                  width={candleWidth}
+                  height={barH}
+                  fill={isBull ? '#059669' : '#dc2626'}
+                  opacity={0.3}
+                />
+              );
+            })}
+
+            {/* Candlesticks (Wick + Body) */}
+            {candles.map((c, i) => {
+              const x = i * candleGap + (candleGap - candleWidth) / 2;
+              const centerX = x + candleWidth / 2;
+              const openY = getY(c.open);
+              const closeY = getY(c.close);
+              const highY = getY(c.high);
+              const lowY = getY(c.low);
+
+              const isBull = c.close >= c.open;
+              const bodyTop = Math.min(openY, closeY);
+              const bodyHeight = Math.max(2, Math.abs(closeY - openY));
+
+              const color = isBull ? '#10b981' : '#ef4444';
+
+              return (
+                <g
+                  key={`candle_${i}`}
+                  className="cursor-crosshair"
+                  onMouseEnter={() => setHoveredCandle(c)}
+                >
+                  {/* High/Low Wick */}
+                  <line
+                    x1={centerX}
+                    y1={highY}
+                    x2={centerX}
+                    y2={lowY}
+                    stroke={color}
+                    strokeWidth={1.2}
+                  />
+                  {/* Open/Close Body */}
+                  <rect
+                    x={x}
+                    y={bodyTop}
+                    width={candleWidth}
+                    height={bodyHeight}
+                    fill={color}
+                    stroke={color}
+                    strokeWidth={1}
+                    rx={1}
+                  />
+                </g>
+              );
+            })}
+
+            {/* Live Price Horizontal Line */}
+            {currentCandle && (
+              <g>
+                <line
+                  x1={0}
+                  y1={getY(currentCandle.close)}
+                  x2={plotWidth}
+                  y2={getY(currentCandle.close)}
+                  stroke="#38bdf8"
+                  strokeDasharray="2 2"
+                  strokeWidth={1}
+                />
+                <rect
+                  x={plotWidth + 4}
+                  y={getY(currentCandle.close) - 9}
+                  width={56}
+                  height={18}
+                  fill="#0284c7"
+                  rx={2}
+                />
+                <text
+                  x={plotWidth + 8}
+                  y={getY(currentCandle.close) + 4}
+                  fill="#ffffff"
+                  fontSize="10"
+                  fontFamily="monospace"
+                  fontWeight="bold"
+                >
+                  ${currentCandle.close.toFixed(2)}
+                </text>
+              </g>
+            )}
+
+            {/* Autonomous Execution Markers (BUY / SELL arrows) */}
+            {symbolOrders.slice(-5).map((order, idx) => {
+              const fillPrice = order.filledPrice || 100;
+              const y = getY(fillPrice);
+              const x = plotWidth - 30 - idx * 45;
+              const isBuy = order.side === 'BUY';
+
+              return (
+                <g key={`marker_${order.id}`}>
+                  <circle
+                    cx={x}
+                    cy={y}
+                    r={6}
+                    fill={isBuy ? '#10b981' : '#ef4444'}
+                    stroke="#0b0f19"
+                    strokeWidth={2}
+                  />
+                  <text
+                    x={x}
+                    y={isBuy ? y - 10 : y + 16}
+                    textAnchor="middle"
+                    fill={isBuy ? '#34d399' : '#f87171'}
+                    fontSize="9"
+                    fontFamily="monospace"
+                    fontWeight="bold"
+                  >
+                    {isBuy ? '▲ BUY' : '▼ SELL'}
+                  </text>
+                </g>
+              );
+            })}
+          </svg>
+        )}
+
+        {/* Hover Information HUD */}
+        {hoveredCandle && (
+          <div className="absolute top-3 left-4 bg-[#111726]/95 border border-cyan-800/50 p-2.5 rounded-md text-xs font-mono backdrop-blur-sm shadow-xl flex items-center gap-4 text-slate-300">
+            <div>
+              <span className="text-slate-500">O: </span>
+              <strong className="text-white">${hoveredCandle.open.toFixed(2)}</strong>
+            </div>
+            <div>
+              <span className="text-slate-500">H: </span>
+              <strong className="text-emerald-400">${hoveredCandle.high.toFixed(2)}</strong>
+            </div>
+            <div>
+              <span className="text-slate-500">L: </span>
+              <strong className="text-rose-400">${hoveredCandle.low.toFixed(2)}</strong>
+            </div>
+            <div>
+              <span className="text-slate-500">C: </span>
+              <strong className="text-white">${hoveredCandle.close.toFixed(2)}</strong>
+            </div>
+            <div>
+              <span className="text-slate-500">Vol: </span>
+              <strong className="text-slate-200">{(hoveredCandle.volume / 1000).toFixed(1)}K</strong>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Bottom Technical Indicators Ribbon */}
+      <div className="border-t border-broker-border px-4 py-2 bg-[#0c101a] flex flex-wrap items-center justify-between gap-4 text-xs font-mono text-slate-400">
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-1.5">
+            <span className="text-slate-500">RSI(14):</span>
+            <span
+              className={`font-semibold ${
+                latestIndicators.rsi < 35
+                  ? 'text-emerald-400'
+                  : latestIndicators.rsi > 65
+                  ? 'text-rose-400'
+                  : 'text-slate-200'
+              }`}
+            >
+              {latestIndicators.rsi}
+            </span>
+          </div>
+
+          <div className="flex items-center gap-1.5">
+            <span className="text-slate-500">MACD:</span>
+            <span className="text-cyan-400">{latestIndicators.macd.macdLine}</span>
+            <span className="text-slate-600">/</span>
+            <span className="text-amber-400">{latestIndicators.macd.signalLine}</span>
+            <span
+              className={`text-[10px] px-1 rounded ${
+                latestIndicators.macd.histogram >= 0
+                  ? 'bg-emerald-950 text-emerald-400'
+                  : 'bg-rose-950 text-rose-400'
+              }`}
+            >
+              {latestIndicators.macd.histogram >= 0 ? '+' : ''}
+              {latestIndicators.macd.histogram}
+            </span>
+          </div>
+
+          <div className="hidden md:flex items-center gap-1.5">
+            <span className="text-slate-500">ATR(14):</span>
+            <span className="text-slate-200">${latestIndicators.atr}</span>
+          </div>
+        </div>
+
+        {/* Legend */}
+        <div className="hidden lg:flex items-center gap-3 text-[11px]">
+          <div className="flex items-center gap-1">
+            <span className="w-2.5 h-0.5 bg-cyan-400 inline-block" />
+            <span className="text-slate-400">EMA 9</span>
+          </div>
+          <div className="flex items-center gap-1">
+            <span className="w-2.5 h-0.5 bg-amber-400 inline-block" />
+            <span className="text-slate-400">EMA 21</span>
+          </div>
+          <div className="flex items-center gap-1">
+            <span className="w-2.5 h-0.5 bg-purple-400 inline-block" />
+            <span className="text-slate-400">SMA 50</span>
+          </div>
+          <div className="flex items-center gap-1">
+            <span className="w-2.5 h-0.5 bg-blue-500 inline-block border-b border-dashed" />
+            <span className="text-slate-400">Bollinger Bands</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
