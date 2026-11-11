@@ -122,81 +122,109 @@ export default function AutonomousBrokerApp() {
       .then((summary) => setPortfolio(summary));
   }, []);
 
-  // Autonomous Trading Engine Loop (Runs every 2.4 seconds)
+  // Live state reference to prevent interval churn and hook array size changes
+  const stateRef = useRef({
+    selectedSymbol,
+    marketData,
+    autonomousEnabled,
+    agentMode,
+    riskConfig,
+    circuitBreakerTripped,
+    activeBroker,
+    portfolio,
+  });
+
   useEffect(() => {
-    if (!isMounted) return;
+    stateRef.current = {
+      selectedSymbol,
+      marketData,
+      autonomousEnabled,
+      agentMode,
+      riskConfig,
+      circuitBreakerTripped,
+      activeBroker,
+      portfolio,
+    };
+  });
 
+  // Autonomous Trading Engine Loop (Runs cleanly on fixed interval)
+  useEffect(() => {
     const interval = setInterval(async () => {
-      // 1. Advance market price for current symbol (and random secondary symbol)
-      setMarketData((prev) => {
-        const currentSeries = prev[selectedSymbol];
-        if (!currentSeries || currentSeries.length === 0) return prev;
+      const {
+        selectedSymbol: sym,
+        marketData: data,
+        autonomousEnabled: autoActive,
+        agentMode: mode,
+        riskConfig: risk,
+        circuitBreakerTripped: tripped,
+        activeBroker: brokerType,
+      } = stateRef.current;
 
-        const last = currentSeries[currentSeries.length - 1];
-        const nextCandle = generateNextCandle(last, WATCHLIST[selectedSymbol]?.volatility || 0.3);
-        const updated = [...currentSeries.slice(1), nextCandle];
+      const currentSeries = data[sym];
+      if (!currentSeries || currentSeries.length === 0) return;
 
-        // Update broker price feed
-        brokerManager.getSimulatedBroker().updateLivePrice(selectedSymbol, nextCandle.close);
+      const last = currentSeries[currentSeries.length - 1];
+      const nextCandle = generateNextCandle(last, WATCHLIST[sym]?.volatility || 0.3);
+      const updated = [...currentSeries.slice(1), nextCandle];
 
-        return {
-          ...prev,
-          [selectedSymbol]: updated,
-        };
-      });
+      // Update broker price feed
+      brokerManager.getSimulatedBroker().updateLivePrice(sym, nextCandle.close);
 
-      // 2. Refresh Portfolio
-      const broker = brokerManager.getBroker(activeBroker);
+      setMarketData((prev) => ({
+        ...prev,
+        [sym]: updated,
+      }));
+
+      // Refresh Portfolio
+      const broker = brokerManager.getBroker(brokerType);
       const summary = await broker.getAccountSummary();
       setPortfolio(summary);
 
-      // 3. Circuit Breaker Check
-      if (summary.dayDrawdownPct >= riskConfig.maxDailyDrawdownPct && !circuitBreakerTripped) {
+      // Circuit Breaker Check
+      if (summary.dayDrawdownPct >= risk.maxDailyDrawdownPct && !tripped) {
         setCircuitBreakerTripped(true);
         setAutonomousEnabled(false);
         addLog({
           level: 'RISK_ALERT',
           title: 'CIRCUIT BREAKER TRIGGERED',
-          message: `Daily drawdown (${summary.dayDrawdownPct.toFixed(2)}%) reached or exceeded maximum limit (${riskConfig.maxDailyDrawdownPct}%). All autonomous trading halted for safety.`,
+          message: `Daily drawdown (${summary.dayDrawdownPct.toFixed(2)}%) reached or exceeded maximum limit (${risk.maxDailyDrawdownPct}%). All autonomous trading halted for safety.`,
         });
         return;
       }
 
-      // 4. Run Quantitative & AI Strategy Evaluation
-      const series = marketData[selectedSymbol];
-      if (!series || series.length < 35) return;
+      // Run Quantitative & AI Strategy Evaluation
+      if (updated.length < 35) return;
 
       const signal = evaluateStrategy({
-        symbol: selectedSymbol,
-        candles: series,
-        mode: agentMode,
-        risk: riskConfig,
+        symbol: sym,
+        candles: updated,
+        mode,
+        risk,
         portfolio: summary,
       });
 
       setCurrentSignal(signal);
 
-      // 5. Autonomous Execution
-      if (autonomousEnabled && !circuitBreakerTripped) {
-        const existingPosition = summary.positions.find((p) => p.symbol === selectedSymbol);
+      // Autonomous Execution
+      if (autoActive && !tripped) {
+        const existingPosition = summary.positions.find((p) => p.symbol === sym);
 
         // BUY Trigger
         if (signal.action === 'BUY' && (!existingPosition || existingPosition.quantity === 0)) {
-          // Check position size limit
-          const maxAllocation = summary.equity * (riskConfig.maxPositionSizePct / 100);
+          const maxAllocation = summary.equity * (risk.maxPositionSizePct / 100);
           const sharesToBuy = Math.max(1, Math.floor(maxAllocation / signal.price));
           const totalCost = sharesToBuy * signal.price;
 
           if (summary.cash >= totalCost) {
             addLog({
               level: 'SIGNAL',
-              symbol: selectedSymbol,
+              symbol: sym,
               title: `Confluence Buy Triggered (${signal.confidence}%)`,
-              message: `Evaluating ${selectedSymbol} in ${signal.regime} regime. Identified high confluence entry at $${signal.price.toFixed(2)}.`,
+              message: `Evaluating ${sym} in ${signal.regime} regime. Identified high confluence entry at $${signal.price.toFixed(2)}.`,
             });
 
             const orderResult = await broker.placeOrder({
-              symbol: selectedSymbol,
+              symbol: sym,
               side: 'BUY',
               type: 'MARKET',
               quantity: sharesToBuy,
@@ -208,11 +236,10 @@ export default function AutonomousBrokerApp() {
             if (orderResult.success && orderResult.order) {
               addLog({
                 level: 'TRADE',
-                symbol: selectedSymbol,
+                symbol: sym,
                 title: `Executed BUY ${sharesToBuy} shares @ $${orderResult.order.filledPrice}`,
                 message: `Bracket armed: Stop-loss at $${signal.suggestedStopLoss.toFixed(2)}, Take-profit at $${signal.suggestedTakeProfit.toFixed(2)}. Target R:R ${signal.riskRewardRatio}:1`,
               });
-              // Refresh portfolio state immediately
               const updatedSummary = await broker.getAccountSummary();
               setPortfolio(updatedSummary);
             }
@@ -223,13 +250,13 @@ export default function AutonomousBrokerApp() {
         if (signal.action === 'SELL' && existingPosition && existingPosition.quantity > 0) {
           addLog({
             level: 'SIGNAL',
-            symbol: selectedSymbol,
+            symbol: sym,
             title: `Confluence Exit Triggered (${signal.confidence}%)`,
-            message: `Bearish inflection detected for ${selectedSymbol}. Liquidating ${existingPosition.quantity} shares to preserve capital.`,
+            message: `Bearish inflection detected for ${sym}. Liquidating ${existingPosition.quantity} shares to preserve capital.`,
           });
 
           const orderResult = await broker.placeOrder({
-            symbol: selectedSymbol,
+            symbol: sym,
             side: 'SELL',
             type: 'MARKET',
             quantity: existingPosition.quantity,
@@ -239,7 +266,7 @@ export default function AutonomousBrokerApp() {
           if (orderResult.success && orderResult.order) {
             addLog({
               level: 'TRADE',
-              symbol: selectedSymbol,
+              symbol: sym,
               title: `Executed SELL ${existingPosition.quantity} shares @ $${orderResult.order.filledPrice}`,
               message: `Position closed. Realized P&L recorded.`,
             });
@@ -251,17 +278,7 @@ export default function AutonomousBrokerApp() {
     }, 2400);
 
     return () => clearInterval(interval);
-  }, [
-    isMounted,
-    selectedSymbol,
-    marketData,
-    autonomousEnabled,
-    agentMode,
-    riskConfig,
-    circuitBreakerTripped,
-    activeBroker,
-    addLog,
-  ]);
+  }, [addLog]);
 
   // Handle Manual "Run Strategy Now"
   const handleExecuteNow = async () => {
